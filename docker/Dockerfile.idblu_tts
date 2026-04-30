@@ -4,11 +4,14 @@ FROM ${BASE_IMAGE}
 ARG COMMON_WORKDIR=/app
 ARG FORK_COMMIT=d1321732e7665068e98cc1a6d2897c2764a1e6cd
 ARG WRAPPER_VERSION=1
+ARG PACKAGE_VERSION_OVERRIDE=0.1.0.dev0
 
 LABEL org.opencontainers.image.title="idblu_tts"
 LABEL org.opencontainers.image.description="ID-BLU wrapper around vllm-omni Qwen3 TTS"
 LABEL org.opencontainers.image.version="${WRAPPER_VERSION}"
 LABEL org.opencontainers.image.revision="${FORK_COMMIT}"
+
+ENV VLLM_OMNI_VERSION_OVERRIDE=${PACKAGE_VERSION_OVERRIDE}
 
 WORKDIR ${COMMON_WORKDIR}
 
