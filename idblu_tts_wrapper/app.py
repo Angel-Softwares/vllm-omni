@@ -5,13 +5,15 @@ from typing import Any, AsyncGenerator
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, status
+from httpx import HTTPError
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from idblu_tts_wrapper.config import Settings
-from idblu_tts_wrapper.voice_registry import VoiceRegistry
+from idblu_tts_wrapper.voice_registry import VoiceRegistry, VoiceValidationError
 
 logger = logging.getLogger(__name__)
+UPSTREAM_STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=15.0, pool=5.0)
 
 
 class SpeechRequest(BaseModel):
@@ -28,6 +30,14 @@ class SpeechRequest(BaseModel):
     language: str | None = None
     stream: bool | None = None
 
+    @field_validator("input")
+    @classmethod
+    def validate_input(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("input must not be empty")
+        return trimmed
+
 
 settings = Settings.from_env()
 voice_registry = VoiceRegistry(settings.voice_cache_dir)
@@ -38,10 +48,6 @@ async def _authorize(
     x_admin_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
 ) -> None:
-    if not settings.admin_key:
-        logger.warning("IDBLU_TTS_ADMIN_KEY is not configured; rejecting authenticated endpoints.")
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Service auth not configured")
-
     bearer_token = ""
     if authorization:
         scheme, _, token = authorization.partition(" ")
@@ -55,15 +61,37 @@ async def _authorize(
 
 @app.get("/health")
 async def healthcheck() -> JSONResponse:
+    return JSONResponse(content={"status": "ok"})
+
+
+@app.get("/ready")
+async def readiness() -> JSONResponse:
+    voice_error = voice_registry.readiness_error(settings.default_voice_id)
+    if voice_error:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "not_ready", "reason": voice_error},
+        )
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(f"{settings.upstream_url}/health")
             response.raise_for_status()
-            payload = response.json()
+            payload: dict[str, Any] = {"status_code": response.status_code}
+            content_type = response.headers.get("content-type", "").lower()
+            body = response.text.strip()
+            if body:
+                if "json" in content_type:
+                    payload["body"] = response.json()
+                else:
+                    payload["body"] = body
     except Exception as exc:  # pragma: no cover - error path is exercised in runtime
-        logger.warning("Upstream health check failed: %s", exc)
-        return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"status": "unhealthy"})
-    return JSONResponse(content=payload)
+        logger.warning("Upstream readiness check failed: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "not_ready", "reason": f"Upstream health check failed: {exc}"},
+        )
+    return JSONResponse(content={"status": "ready", "upstream": payload})
 
 
 @app.get("/v1/audio/voices", dependencies=[Depends(_authorize)])
@@ -92,6 +120,14 @@ async def create_speech(request: SpeechRequest) -> StreamingResponse:
             resolved_locally = True
     except FileNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except VoiceValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    if payload.get("ref_audio") and not payload.get("ref_text"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="ref_text is required when ref_audio is provided",
+        )
 
     logger.info(
         "Proxying TTS request model=%s voice=%s resolved_locally=%s",
@@ -101,12 +137,19 @@ async def create_speech(request: SpeechRequest) -> StreamingResponse:
     )
 
     async def stream() -> AsyncGenerator[bytes, None]:
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("POST", f"{settings.upstream_url}/v1/audio/speech", json=payload) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_bytes():
-                    if chunk:
-                        yield chunk
+        async with httpx.AsyncClient(timeout=UPSTREAM_STREAM_TIMEOUT) as client:
+            try:
+                async with client.stream("POST", f"{settings.upstream_url}/v1/audio/speech", json=payload) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_bytes():
+                        if chunk:
+                            yield chunk
+            except HTTPError as exc:
+                logger.warning("Upstream TTS request failed: %s", exc)
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Upstream TTS request failed: {exc}",
+                ) from exc
 
     return StreamingResponse(stream(), media_type=_media_type_for_format(payload["response_format"]))
 

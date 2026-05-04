@@ -1,12 +1,30 @@
+import os
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+TEST_CACHE_DIR = Path("/tmp/idblu-tts-wrapper-tests")
+TEST_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("IDBLU_TTS_ADMIN_KEY", "test-key")
+os.environ.setdefault("IDBLU_TTS_MODEL_ID", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
+os.environ.setdefault("IDBLU_TTS_DEFAULT_VOICE_ID", "eliane")
+os.environ.setdefault("IDBLU_TTS_VOICE_CACHE_DIR", str(TEST_CACHE_DIR))
+
 from idblu_tts_wrapper.app import app
 
 
-def test_health_reports_unhealthy_when_upstream_fails(monkeypatch):
+def test_health_is_liveness_only():
+    client = TestClient(app)
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_ready_reports_unhealthy_when_upstream_fails(monkeypatch, client_with_voice_cache):
+    client, _ = client_with_voice_cache
+
     class FakeClient:
         async def __aenter__(self):
             return self
@@ -19,11 +37,25 @@ def test_health_reports_unhealthy_when_upstream_fails(monkeypatch):
 
     monkeypatch.setattr("idblu_tts_wrapper.app.httpx.AsyncClient", lambda *args, **kwargs: FakeClient())
 
-    client = TestClient(app)
-    response = client.get("/health")
+    response = client.get("/ready")
 
     assert response.status_code == 503
-    assert response.json() == {"status": "unhealthy"}
+    assert response.json()["status"] == "not_ready"
+    assert "Upstream health check failed" in response.json()["reason"]
+
+
+def test_ready_reports_missing_metadata_for_default_voice(client_with_voice_cache):
+    client, cache_dir = client_with_voice_cache
+    voice_dir = cache_dir / "eliane"
+    voice_dir.mkdir(parents=True, exist_ok=True)
+    (voice_dir / "metadata.json").unlink(missing_ok=True)
+    (cache_dir / "eliane.wav").unlink(missing_ok=True)
+    (cache_dir / "eliane.txt").unlink(missing_ok=True)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["reason"] == f"Voice 'eliane' is missing metadata.json"
 
 
 def test_list_voices_requires_auth(client_with_voice_cache):
@@ -96,10 +128,33 @@ def test_speech_returns_not_found_when_voice_missing(client_with_voice_cache):
     assert response.status_code == 404
 
 
+def test_speech_returns_422_when_voice_missing_ref_text(client_with_voice_cache):
+    client, cache_dir = client_with_voice_cache
+    voice_dir = cache_dir / "eliane"
+    voice_dir.mkdir(parents=True, exist_ok=True)
+    (voice_dir / "metadata.json").write_text('{"voice_id":"eliane","display_name":"Eliane","audio_file":"reference.wav"}')
+    (voice_dir / "reference.wav").write_bytes(b"RIFFtest")
+    (cache_dir / "eliane.wav").unlink(missing_ok=True)
+    (cache_dir / "eliane.txt").unlink(missing_ok=True)
+
+    response = client.post(
+        "/v1/audio/speech",
+        headers={"X-Admin-Key": "test-key"},
+        json={"input": "bonjour", "voice_id": "eliane"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Voice 'eliane' is missing ref_text"
+
+
 def _write_voice_cache(cache_dir: Path) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    (cache_dir / "eliane.wav").write_bytes(b"RIFFtest")
-    (cache_dir / "eliane.txt").write_text("Bonjour reference")
+    voice_dir = cache_dir / "eliane"
+    voice_dir.mkdir(parents=True, exist_ok=True)
+    (voice_dir / "metadata.json").write_text(
+        '{"voice_id":"eliane","display_name":"Eliane","audio_file":"reference.wav","ref_text":"Bonjour reference"}'
+    )
+    (voice_dir / "reference.wav").write_bytes(b"RIFFtest")
 
 
 def _set_app_state(monkeypatch, cache_dir: Path) -> None:
