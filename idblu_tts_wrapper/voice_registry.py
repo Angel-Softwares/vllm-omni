@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+class VoiceValidationError(ValueError):
+    """Raised when a voice exists but is incomplete or invalid."""
+
+
 @dataclass(frozen=True)
 class VoiceSpec:
     voice_id: str
@@ -55,13 +59,15 @@ class VoiceRegistry:
     def resolve(self, voice_id: str) -> VoiceSpec:
         normalized = voice_id.strip()
         if not normalized:
-            raise FileNotFoundError("Voice id is empty")
+            raise VoiceValidationError("Voice id is empty")
 
         metadata_path = self._cache_dir / normalized / "metadata.json"
         if metadata_path.exists():
             payload = self._load_json(metadata_path)
             audio_path = self._resolve_audio_path(metadata_path.parent, payload)
             ref_text = self._resolve_ref_text(metadata_path.parent, payload)
+            if not ref_text:
+                raise VoiceValidationError(f"Voice '{normalized}' is missing ref_text")
             return VoiceSpec(
                 voice_id=normalized,
                 display_name=str(payload.get("display_name") or payload.get("voice_id") or normalized),
@@ -87,6 +93,10 @@ class VoiceRegistry:
 
         ref_text_path = flat_audio_path.with_suffix(".txt")
         ref_text = ref_text_path.read_text().strip() if ref_text_path.exists() else None
+        if not ref_text:
+            raise VoiceValidationError(
+                f"Voice '{normalized}' is missing ref_text; migrate it to {self._cache_dir / normalized / 'metadata.json'}"
+            )
         return VoiceSpec(
             voice_id=normalized,
             display_name=normalized,
@@ -95,9 +105,47 @@ class VoiceRegistry:
             source_path=flat_audio_path,
         )
 
+    def readiness_error(self, voice_id: str) -> str | None:
+        if not self._cache_dir.exists() or not self._cache_dir.is_dir():
+            return f"Voice cache directory is unavailable: {self._cache_dir}"
+
+        normalized = voice_id.strip()
+        if not normalized:
+            return "Default voice id is empty"
+
+        metadata_dir = self._cache_dir / normalized
+        metadata_path = metadata_dir / "metadata.json"
+        if metadata_dir.exists() and not metadata_dir.is_dir():
+            return f"Voice directory is invalid for '{normalized}'"
+        if metadata_dir.exists() and not metadata_path.exists():
+            return f"Voice '{normalized}' is missing metadata.json"
+        if metadata_path.exists():
+            try:
+                self.resolve(normalized)
+            except (FileNotFoundError, VoiceValidationError, ValueError) as exc:
+                return str(exc)
+            return None
+
+        legacy_audio = self._first_existing(
+            [
+                self._cache_dir / f"{normalized}.wav",
+                self._cache_dir / f"{normalized}.mp3",
+                self._cache_dir / f"{normalized}.flac",
+            ]
+        )
+        if legacy_audio is not None:
+            return (
+                f"Voice '{normalized}' is still using legacy flat files; "
+                f"migrate it to {self._cache_dir / normalized / 'metadata.json'}"
+            )
+        return f"Voice '{normalized}' not found in {self._cache_dir}"
+
     @staticmethod
     def _load_json(path: Path) -> dict:
-        return json.loads(path.read_text())
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            raise VoiceValidationError(f"Voice metadata at {path} is not valid JSON") from exc
 
     @staticmethod
     def _first_existing(candidates: list[Path]) -> Path | None:
@@ -123,7 +171,7 @@ class VoiceRegistry:
         )
         audio_path = self._first_existing(candidates)
         if audio_path is None:
-            raise FileNotFoundError(f"No audio file found for voice '{directory.name}'")
+            raise VoiceValidationError(f"Voice '{directory.name}' is missing its reference audio file")
         return audio_path
 
     def _resolve_ref_text(self, directory: Path, payload: dict) -> str | None:
