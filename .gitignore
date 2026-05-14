@@ -181,7 +181,10 @@ AGENTS.md
 .cursor/
 
 # scripts
-/scripts/
+/scripts/*
+!/scripts/
+!/scripts/build_wheel.sh
+!/scripts/build-push-ecr.sh
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

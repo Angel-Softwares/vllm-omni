@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import logging
+import os
+import platform
+import shutil
+import socket
+import subprocess
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
 import httpx
+import psutil
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from httpx import HTTPError
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -16,6 +23,10 @@ from idblu_tts_wrapper.voice_registry import VoiceRegistry, VoiceValidationError
 
 logger = logging.getLogger(__name__)
 UPSTREAM_STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=15.0, pool=5.0)
+PROCESS_STARTED_AT = time.time()
+ACTIVE_TTS_JOBS = 0
+TOTAL_TTS_JOBS = 0
+FAILED_TTS_JOBS = 0
 
 
 class SpeechRequest(BaseModel):
@@ -52,6 +63,107 @@ class SpeechRequest(BaseModel):
 settings = Settings.from_env()
 voice_registry = VoiceRegistry(settings.voice_cache_dir)
 app = FastAPI(title="idblu_tts", version="1.0.0")
+
+
+def _private_ip() -> str | None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+    except Exception:
+        return None
+
+
+def _gpu_metrics() -> dict[str, float | None]:
+    try:
+        output = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1.5,
+        )
+    except Exception:
+        return {
+            "gpu_percent": None,
+            "gpu_memory_used_mb": None,
+            "gpu_memory_total_mb": None,
+            "gpu_memory_percent": None,
+        }
+
+    rows: list[tuple[float, float, float]] = []
+    for line in output.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 3:
+            continue
+        try:
+            rows.append((float(parts[0]), float(parts[1]), float(parts[2])))
+        except ValueError:
+            continue
+
+    if not rows:
+        return {
+            "gpu_percent": None,
+            "gpu_memory_used_mb": None,
+            "gpu_memory_total_mb": None,
+            "gpu_memory_percent": None,
+        }
+
+    used_mb = sum(row[1] for row in rows)
+    total_mb = sum(row[2] for row in rows)
+    return {
+        "gpu_percent": round(max(row[0] for row in rows), 2),
+        "gpu_memory_used_mb": round(used_mb, 2),
+        "gpu_memory_total_mb": round(total_mb, 2),
+        "gpu_memory_percent": round((used_mb / total_mb) * 100, 2) if total_mb else None,
+    }
+
+
+def _runtime_metrics() -> dict[str, Any]:
+    disk = shutil.disk_usage("/")
+    memory = psutil.virtual_memory()
+    process = psutil.Process(os.getpid())
+    return {
+        "service": "idblu-tts",
+        "environment": os.getenv("ENVIRONMENT", "shared") or "shared",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": "ok",
+        "host": {
+            "hostname": socket.gethostname(),
+            "private_ip": _private_ip(),
+            "platform": platform.platform(),
+        },
+        "process": {
+            "pid": os.getpid(),
+            "uptime_seconds": round(time.time() - PROCESS_STARTED_AT, 2),
+            "rss_bytes": process.memory_info().rss,
+            "threads": process.num_threads(),
+        },
+        "resources": {
+            "cpu_percent": psutil.cpu_percent(interval=0.1),
+            "memory_percent": memory.percent,
+            "memory_used_bytes": memory.used,
+            "memory_total_bytes": memory.total,
+            "disk_percent": round((disk.used / disk.total) * 100, 2) if disk.total else None,
+            "disk_used_bytes": disk.used,
+            "disk_total_bytes": disk.total,
+            "load_average": os.getloadavg() if hasattr(os, "getloadavg") else None,
+            **_gpu_metrics(),
+        },
+        "runtime": {
+            "active_tts_jobs": ACTIVE_TTS_JOBS,
+            "queue_depth": 0,
+            "total_tts_jobs": TOTAL_TTS_JOBS,
+            "failed_tts_jobs": FAILED_TTS_JOBS,
+        },
+        "image": {
+            "tag": os.getenv("IMAGE_TAG") or os.getenv("DOCKER_IMAGE_TAG") or "",
+            "digest": os.getenv("IMAGE_DIGEST") or "",
+        },
+    }
 
 
 async def _authorize(
@@ -102,6 +214,11 @@ async def readiness() -> JSONResponse:
             content={"status": "not_ready", "reason": f"Upstream health check failed: {exc}"},
         )
     return JSONResponse(content={"status": "ready", "upstream": payload})
+
+
+@app.get("/metrics/runtime", dependencies=[Depends(_authorize)])
+async def runtime_metrics() -> dict[str, Any]:
+    return _runtime_metrics()
 
 
 @app.get("/v1/audio/voices", dependencies=[Depends(_authorize)])
@@ -183,6 +300,9 @@ async def create_speech(request: SpeechRequest, raw_request: Request) -> Streami
     )
 
     async def stream() -> AsyncGenerator[bytes, None]:
+        global ACTIVE_TTS_JOBS, TOTAL_TTS_JOBS, FAILED_TTS_JOBS
+        ACTIVE_TTS_JOBS += 1
+        TOTAL_TTS_JOBS += 1
         async with httpx.AsyncClient(timeout=UPSTREAM_STREAM_TIMEOUT) as client:
             try:
                 upstream_started_at = time.monotonic()
@@ -216,11 +336,17 @@ async def create_speech(request: SpeechRequest, raw_request: Request) -> Streami
                                 first_downstream_chunk_logged = True
                             yield chunk
             except HTTPError as exc:
+                FAILED_TTS_JOBS += 1
                 logger.warning("[%s] Upstream TTS request failed: %s", trace_id, exc)
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail=f"Upstream TTS request failed: {exc}",
                 ) from exc
+            except Exception:
+                FAILED_TTS_JOBS += 1
+                raise
+            finally:
+                ACTIVE_TTS_JOBS = max(0, ACTIVE_TTS_JOBS - 1)
 
     return StreamingResponse(stream(), media_type=_media_type_for_format(payload["response_format"]))
 
