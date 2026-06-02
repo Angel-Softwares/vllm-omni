@@ -24,6 +24,7 @@ RUN mkdir -p ${COMMON_WORKDIR}/vllm-omni /data/voices
 
 COPY docker/use_venv_cuda.sh ${COMMON_WORKDIR}/use_venv_cuda.sh
 COPY . ${COMMON_WORKDIR}/vllm-omni
+RUN cp ${COMMON_WORKDIR}/use_venv_cuda.sh ${COMMON_WORKDIR}/vllm-omni/use_venv_cuda.sh
 
 RUN cd ${COMMON_WORKDIR}/vllm-omni && \
     uv pip install --python "$(python3 -c 'import sys; print(sys.executable)')" --no-cache-dir "."
