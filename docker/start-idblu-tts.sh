@@ -9,7 +9,7 @@ export IDBLU_TTS_PROFILE="${IDBLU_TTS_PROFILE:-safe}"
 
 cd /app/vllm-omni
 
-./examples/online_serving/qwen3_tts/run_server.sh "${IDBLU_TTS_TASK_TYPE}" "${IDBLU_TTS_PROFILE}" &
+./examples/online_serving/text_to_speech/qwen3_tts/run_server.sh "${IDBLU_TTS_TASK_TYPE}" "${IDBLU_TTS_PROFILE}" &
 UPSTREAM_PID=$!
 
 shutdown() {
