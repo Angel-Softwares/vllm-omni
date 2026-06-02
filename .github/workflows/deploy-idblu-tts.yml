@@ -114,7 +114,7 @@ jobs:
             exit 1
           fi
 
-          read -r -d '' REMOTE_SCRIPT <<EOF || true
+          cat > /tmp/idblu-tts-remote.sh <<'EOF'
           set -euo pipefail
 
           AWS_REGION="${AWS_REGION}"
@@ -207,12 +207,29 @@ jobs:
           exit 1
           EOF
 
-          PARAMETERS=$(jq -n --arg commands "$REMOTE_SCRIPT" '{commands: [$commands]}')
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          script_lines = Path('/tmp/idblu-tts-remote.sh').read_text(encoding='utf-8').splitlines()
+          params = {
+              'commands': [
+                  "cat >/tmp/idblu-tts-deploy.sh <<'SCRIPT'",
+                  *script_lines,
+                  'SCRIPT',
+                  'chmod +x /tmp/idblu-tts-deploy.sh',
+                  'sudo bash /tmp/idblu-tts-deploy.sh',
+              ]
+          }
+          Path('/tmp/idblu-tts-ssm-params.json').write_text(json.dumps(params), encoding='utf-8')
+          PY
+
           COMMAND_ID=$(aws ssm send-command \
             --document-name "AWS-RunShellScript" \
             --instance-ids $INSTANCE_IDS \
             --comment "Deploy idblu_tts ${VERSION}" \
-            --parameters "$PARAMETERS" \
+            --parameters file:///tmp/idblu-tts-ssm-params.json \
+            --timeout-seconds 3600 \
             --query "Command.CommandId" \
             --output text)
 
@@ -236,3 +253,4 @@ jobs:
               exit 1
             fi
           done
+
