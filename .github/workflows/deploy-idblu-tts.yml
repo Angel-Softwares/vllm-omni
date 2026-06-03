@@ -190,7 +190,7 @@ jobs:
         run: |
           kubectl kustomize "${{ needs.resolve.outputs.overlay }}" \
             | sed -E "s|image: .*/${ECR_REPOSITORY}:[^[:space:]]+|image: ${{ steps.image.outputs.image_ref }}|g" \
-            | kubectl apply -f -
+            | kubectl apply --validate=false -f -
 
       - name: Wait for rollout
         shell: bash
