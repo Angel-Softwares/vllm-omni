@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: idblu-tts-voice-cache
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: idblu-tts-voice-efs
+  resources:
+    requests:
+      storage: 5Gi

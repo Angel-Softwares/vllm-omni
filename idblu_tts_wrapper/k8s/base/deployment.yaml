@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: idblu-tts
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: idblu-tts
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idblu-tts
+    spec:
+      serviceAccountName: idblu-eks-tts-runtime
+      terminationGracePeriodSeconds: 120
+      initContainers:
+        - name: sync-voices-bootstrap
+          image: public.ecr.aws/aws-cli/aws-cli:2.17.40
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -euo pipefail
+              mkdir -p /data/voices
+              aws s3 sync "s3://${IDBLU_TTS_VOICE_BUCKET}/${IDBLU_TTS_VOICE_PREFIX}" /data/voices --delete
+          envFrom:
+            - configMapRef:
+                name: idblu-tts-config
+          volumeMounts:
+            - name: voice-cache
+              mountPath: /data/voices
+      containers:
+        - name: idblu-tts
+          image: 449678530532.dkr.ecr.ca-central-1.amazonaws.com/idblu-tts:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: upstream
+              containerPort: 8091
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: idblu-tts-config
+            - secretRef:
+                name: idblu-tts-secrets
+          resources:
+            requests:
+              cpu: "2"
+              memory: 12Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: model-cache
+              mountPath: /cache
+            - name: voice-cache
+              mountPath: /data/voices
+            - name: secrets-store-inline
+              mountPath: /mnt/secrets-store
+              readOnly: true
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: idblu-tts-model-cache
+        - name: voice-cache
+          persistentVolumeClaim:
+            claimName: idblu-tts-voice-cache
+        - name: secrets-store-inline
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: idblu-tts-secrets

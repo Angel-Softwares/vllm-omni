@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: idblu-tts-config
+data:
+  IDBLU_TTS_DEPLOY_ENV: staging
+  IDBLU_TTS_VOICE_BUCKET: voice-agent-audio-registry
+  IDBLU_TTS_VOICE_PREFIX: tts/staging/voices
