@@ -72,6 +72,8 @@ jobs:
       image: ${{ steps.filter.outputs.image }}
 
     steps:
+      - uses: actions/checkout@v6
+
       - name: Detect files that require an image rebuild
         id: filter
         uses: dorny/paths-filter@v3
