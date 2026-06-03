@@ -20,10 +20,11 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p ${COMMON_WORKDIR}/vllm-omni/docker ${COMMON_WORKDIR}/vllm-omni/idblu_tts_wrapper /data/voices
+RUN mkdir -p ${COMMON_WORKDIR}/vllm-omni/docker ${COMMON_WORKDIR}/vllm-omni/idblu_tts_wrapper ${COMMON_WORKDIR}/vllm-omni/examples/online_serving/qwen3_tts /data/voices
 
 COPY docker/use_venv_cuda.sh ${COMMON_WORKDIR}/use_venv_cuda.sh
 COPY docker/start-idblu-tts.sh ${COMMON_WORKDIR}/vllm-omni/docker/start-idblu-tts.sh
+COPY examples/online_serving/qwen3_tts ${COMMON_WORKDIR}/vllm-omni/examples/online_serving/qwen3_tts
 COPY pyproject.toml setup.py README.md ${COMMON_WORKDIR}/vllm-omni/
 COPY requirements ${COMMON_WORKDIR}/vllm-omni/requirements
 COPY vllm_omni ${COMMON_WORKDIR}/vllm-omni/vllm_omni
@@ -32,7 +33,7 @@ COPY idblu_tts_wrapper/*.py ${COMMON_WORKDIR}/vllm-omni/idblu_tts_wrapper/
 RUN cd ${COMMON_WORKDIR}/vllm-omni && \
     uv pip install --python "$(python3 -c 'import sys; print(sys.executable)')" --no-cache-dir "."
 
-RUN chmod +x ${COMMON_WORKDIR}/use_venv_cuda.sh ${COMMON_WORKDIR}/vllm-omni/docker/start-idblu-tts.sh && \
+RUN chmod +x ${COMMON_WORKDIR}/use_venv_cuda.sh ${COMMON_WORKDIR}/vllm-omni/docker/start-idblu-tts.sh ${COMMON_WORKDIR}/vllm-omni/examples/online_serving/qwen3_tts/run_server.sh && \
     ln -sf /usr/bin/python3 /usr/bin/python
 
 EXPOSE 8080 8091
