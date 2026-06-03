@@ -14,6 +14,10 @@ on:
           - staging
           - release
           - production
+      image_tag:
+        description: Existing ECR image tag to deploy
+        required: true
+        type: string
 
 permissions:
   id-token: write
@@ -29,17 +33,15 @@ env:
   K8S_ROOT: idblu_tts_wrapper/k8s
 
 jobs:
-  deploy:
-    name: Build, push & deploy idblu_tts
+  resolve:
+    name: Resolve deployment target
     runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_environment || 'staging' }}
-    concurrency:
-      group: idblu-tts-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_environment || 'staging' }}
-      cancel-in-progress: false
+    outputs:
+      target_env: ${{ steps.target.outputs.target_env }}
+      namespace: ${{ steps.target.outputs.namespace }}
+      overlay: ${{ steps.target.outputs.overlay }}
 
     steps:
-      - uses: actions/checkout@v6
-
       - name: Resolve target environment
         id: target
         shell: bash
@@ -62,6 +64,18 @@ jobs:
           echo "namespace=idblu-tts-$TARGET_ENV" >> "$GITHUB_OUTPUT"
           echo "overlay=${K8S_ROOT}/$TARGET_ENV" >> "$GITHUB_OUTPUT"
 
+  build:
+    name: Build and push idblu_tts image
+    runs-on: ubuntu-latest
+    needs: resolve
+    if: github.event_name == 'push'
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      image_sha: ${{ steps.tag.outputs.image_sha }}
+
+    steps:
+      - uses: actions/checkout@v6
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -79,7 +93,7 @@ jobs:
           VERSION="0.1.0-${SHA}"
           ECR_REG="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           IMAGE_SHA="${ECR_REG}/${ECR_REPOSITORY}:${VERSION}"
-          IMAGE_ENV="${ECR_REG}/${ECR_REPOSITORY}:${{ steps.target.outputs.target_env }}"
+          IMAGE_ENV="${ECR_REG}/${ECR_REPOSITORY}:${{ needs.resolve.outputs.target_env }}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "image_sha=${IMAGE_SHA}" >> $GITHUB_OUTPUT
           echo "image_env=${IMAGE_ENV}" >> $GITHUB_OUTPUT
@@ -114,6 +128,46 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  deploy:
+    name: Deploy idblu_tts
+    runs-on: ubuntu-latest
+    needs:
+      - resolve
+      - build
+    if: ${{ always() && needs.resolve.result == 'success' && (github.event_name != 'push' || needs.build.result == 'success') }}
+    environment: ${{ needs.resolve.outputs.target_env }}
+    concurrency:
+      group: idblu-tts-${{ needs.resolve.outputs.target_env }}
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve image to deploy
+        id: image
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DEPLOY_TAG="${{ github.event.inputs.image_tag }}"
+          else
+            DEPLOY_TAG="${{ needs.build.outputs.version }}"
+          fi
+
+          if [ -z "$DEPLOY_TAG" ]; then
+            echo "Deploy tag is empty"
+            exit 1
+          fi
+
+          IMAGE_REF="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${DEPLOY_TAG}"
+          echo "deploy_tag=$DEPLOY_TAG" >> "$GITHUB_OUTPUT"
+          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
 
@@ -127,26 +181,29 @@ jobs:
       - name: Reset warmup job
         shell: bash
         run: |
-          if kubectl get namespace "${{ steps.target.outputs.namespace }}" >/dev/null 2>&1; then
-            kubectl -n "${{ steps.target.outputs.namespace }}" delete job idblu-tts-warmup --ignore-not-found
+          if kubectl get namespace "${{ needs.resolve.outputs.namespace }}" >/dev/null 2>&1; then
+            kubectl -n "${{ needs.resolve.outputs.namespace }}" delete job idblu-tts-warmup --ignore-not-found
           fi
 
       - name: Deploy overlay
         shell: bash
         run: |
-          kubectl apply -k "${{ steps.target.outputs.overlay }}"
+          kubectl kustomize "${{ needs.resolve.outputs.overlay }}" \
+            | sed -E "s|image: .*/${ECR_REPOSITORY}:[^[:space:]]+|image: ${{ steps.image.outputs.image_ref }}|g" \
+            | kubectl apply -f -
 
       - name: Wait for rollout
         shell: bash
         run: |
-          kubectl -n "${{ steps.target.outputs.namespace }}" rollout status deployment/idblu-tts --timeout=30m
+          kubectl -n "${{ needs.resolve.outputs.namespace }}" rollout status deployment/idblu-tts --timeout=30m
 
       - name: Show deployed pods
         shell: bash
         run: |
-          kubectl -n "${{ steps.target.outputs.namespace }}" get pods -l app.kubernetes.io/name=idblu-tts -o wide
+          kubectl -n "${{ needs.resolve.outputs.namespace }}" get pods -l app.kubernetes.io/name=idblu-tts -o wide
+          kubectl -n "${{ needs.resolve.outputs.namespace }}" get deployment idblu-tts -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
 
       - name: Wait for warmup job
         shell: bash
         run: |
-          kubectl -n "${{ steps.target.outputs.namespace }}" wait --for=condition=complete job/idblu-tts-warmup --timeout=30m
+          kubectl -n "${{ needs.resolve.outputs.namespace }}" wait --for=condition=complete job/idblu-tts-warmup --timeout=30m

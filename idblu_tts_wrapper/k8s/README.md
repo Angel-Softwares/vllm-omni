@@ -25,8 +25,10 @@ kubectl apply -k idblu_tts_wrapper/k8s/production
 CI/CD behavior:
 
 - Pushes to `idblu-tts-*` branches automatically build and deploy the `staging` overlay.
-- Manual GitHub Actions runs can deploy `release` or `production`.
-- The workflow pushes both a commit-specific image tag and the environment tag consumed by the overlay (`staging`, `release`, or `production`).
+- Manual GitHub Actions runs can deploy `staging`, `release`, or `production`, and require an explicit existing `image_tag` to deploy.
+- The workflow is split into separate build and deploy jobs.
+- Push-triggered staging runs build a commit-specific image tag and then deploy that exact tag.
+- The build job also pushes the environment tag consumed by the overlays (`staging`, `release`, or `production`).
 
 Before applying:
 
