@@ -5,7 +5,14 @@ export VLLM_OMNI_HOST="${VLLM_OMNI_HOST:-127.0.0.1}"
 export VLLM_OMNI_PORT="${VLLM_OMNI_PORT:-8091}"
 export IDBLU_TTS_PORT="${IDBLU_TTS_PORT:-8080}"
 export IDBLU_TTS_TASK_TYPE="${IDBLU_TTS_TASK_TYPE:-Base}"
-export IDBLU_TTS_PROFILE="${IDBLU_TTS_PROFILE:-safe}"
+export IDBLU_TTS_PROFILE="${IDBLU_TTS_PROFILE-safe}"
+export HF_HOME="${HF_HOME:-/cache/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME%/}/hub}"
+
+if [ -n "${TRANSFORMERS_CACHE:-}" ]; then
+  echo "Ignoring deprecated TRANSFORMERS_CACHE; using HF_HOME=${HF_HOME} and HF_HUB_CACHE=${HF_HUB_CACHE}" >&2
+  unset TRANSFORMERS_CACHE
+fi
 
 cd /app/vllm-omni
 

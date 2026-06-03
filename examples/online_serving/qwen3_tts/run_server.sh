@@ -37,29 +37,81 @@ esac
 
 echo "Starting Qwen3-TTS server with model: $MODEL"
 
-case "$PROFILE" in
-    "")
-        DEPLOY_CONFIG="${QWEN3_TTS_DEPLOY_CONFIG:-vllm_omni/deploy/qwen3_tts.yaml}"
-        PROFILE_LABEL="custom/default"
-        ;;
-    safe)
-        DEPLOY_CONFIG="vllm_omni/deploy/qwen3_tts_safe.yaml"
-        PROFILE_LABEL="safe"
-        ;;
-    latency|async)
-        DEPLOY_CONFIG="vllm_omni/deploy/qwen3_tts_safe_async.yaml"
-        PROFILE_LABEL="latency"
-        ;;
-    default|fast)
-        DEPLOY_CONFIG="vllm_omni/deploy/qwen3_tts.yaml"
-        PROFILE_LABEL="default"
-        ;;
-    *)
-        echo "Unknown profile: $PROFILE"
-        echo "Supported profiles: safe, latency, default"
-        exit 1
-        ;;
-esac
+if [ -n "${QWEN3_TTS_DEPLOY_CONFIG:-}" ]; then
+    DEPLOY_CONFIG="${QWEN3_TTS_DEPLOY_CONFIG}"
+    PROFILE_LABEL="explicit-deploy-config"
+else
+    case "$PROFILE" in
+        "")
+            DEPLOY_CONFIG="vllm_omni/deploy/qwen3_tts.yaml"
+            PROFILE_LABEL="custom/default"
+            ;;
+        safe)
+            DEPLOY_CONFIG="vllm_omni/deploy/qwen3_tts_safe.yaml"
+            PROFILE_LABEL="safe"
+            ;;
+        latency|async)
+            DEPLOY_CONFIG="vllm_omni/deploy/qwen3_tts_safe_async.yaml"
+            PROFILE_LABEL="latency"
+            ;;
+        default|fast)
+            DEPLOY_CONFIG="vllm_omni/deploy/qwen3_tts.yaml"
+            PROFILE_LABEL="default"
+            ;;
+        *)
+            echo "Unknown profile: $PROFILE"
+            echo "Supported profiles: safe, latency, default"
+            exit 1
+            ;;
+    esac
+fi
+
+preflight_speech_tokenizer() {
+    python - "$MODEL" <<'PY'
+import os
+import sys
+from transformers.utils.hub import cached_file
+
+model = sys.argv[1]
+errors = []
+
+def resolve(filename: str) -> str | None:
+    try:
+        return cached_file(model, filename)
+    except Exception:
+        return None
+
+cfg_path = resolve("speech_tokenizer/config.json")
+prep_path = resolve("speech_tokenizer/preprocessor_config.json")
+speech_dir = os.path.dirname(cfg_path) if cfg_path else None
+
+if not cfg_path or not os.path.isfile(cfg_path):
+    errors.append("missing speech_tokenizer/config.json")
+if not prep_path or not os.path.isfile(prep_path):
+    errors.append("missing speech_tokenizer/preprocessor_config.json")
+
+if speech_dir is None:
+    errors.append("could not resolve local speech_tokenizer directory")
+else:
+    has_weights = any(
+        os.path.isfile(os.path.join(speech_dir, name))
+        for name in ("model.safetensors", "pytorch_model.bin")
+    )
+    if not has_weights:
+        errors.append(
+            f"missing speech_tokenizer weights in {speech_dir} "
+            "(expected model.safetensors or pytorch_model.bin)"
+        )
+
+if errors:
+    sys.stderr.write(f"speech_tokenizer preflight failed for {model}\n")
+    for error in errors:
+        sys.stderr.write(f" - {error}\n")
+    sys.exit(1)
+
+print(f"speech_tokenizer preflight OK: {speech_dir}")
+PY
+}
 
 export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
 HOST="${VLLM_OMNI_HOST:-0.0.0.0}"
@@ -76,6 +128,8 @@ if [ -n "${VLLM_GLOBAL_GPU_MEMORY_UTILIZATION:-}" ]; then
 else
     echo "Using GPU memory utilization from deploy config"
 fi
+
+preflight_speech_tokenizer
 
 vllm-omni serve "$MODEL" \
     --deploy-config "$DEPLOY_CONFIG" \
