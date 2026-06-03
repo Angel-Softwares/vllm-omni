@@ -87,8 +87,9 @@ spec:
               mountPath: /mnt/secrets-store
               readOnly: true
       tolerations:
-        - key: nvidia.com/gpu
-          operator: Exists
+        - key: accelerator
+          operator: Equal
+          value: nvidia
           effect: NoSchedule
       volumes:
         - name: dshm
