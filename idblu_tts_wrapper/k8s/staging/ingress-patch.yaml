@@ -3,10 +3,10 @@ kind: Ingress
 metadata:
   name: idblu-tts-private
   annotations:
-    external-dns.alpha.kubernetes.io/hostname: idblu-tts-staging.idblu.internal
+    external-dns.alpha.kubernetes.io/hostname: idblu-tts-staging.internal.account.idblu.com
 spec:
   rules:
-    - host: idblu-tts-staging.idblu.internal
+    - host: idblu-tts-staging.internal.account.idblu.com
       http:
         paths:
           - path: /
