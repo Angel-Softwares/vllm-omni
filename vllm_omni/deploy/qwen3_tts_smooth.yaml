@@ -1,8 +1,3 @@
-# Qwen3-TTS smooth streaming profile for ID-BLU.
-#
-# Based on qwen3_tts.yaml. Keeps async chunking and stage settings for low
-# first-audio latency, while reducing small playback gaps by polling the
-# shared-memory connector more often and giving Code2Wav more left context.
 async_chunk: true
 
 connectors:
@@ -11,16 +6,17 @@ connectors:
     extra:
       shm_threshold_bytes: 65536
       codec_streaming: true
-      connector_get_sleep_s: 0.005
+      connector_get_sleep_s: 0.002
       connector_get_max_wait_first_chunk: 3000
-      connector_get_max_wait: 300
-      codec_chunk_frames: 25
-      codec_left_context_frames: 96
+      connector_get_max_wait: 120
+      initial_codec_chunk_frames: 1
+      codec_chunk_frames: 8
+      codec_left_context_frames: 48
 
 stages:
   - stage_id: 0
     max_num_seqs: 4
-    gpu_memory_utilization: 0.3
+    gpu_memory_utilization: 0.35
     async_scheduling: true
     max_num_batched_tokens: 512
     max_model_len: 4096
@@ -40,8 +36,8 @@ stages:
       top_p: 1.0
 
   - stage_id: 1
-    max_num_seqs: 1
-    gpu_memory_utilization: 0.4
+    max_num_seqs: 4
+    gpu_memory_utilization: 0.5
     enforce_eager: true
     async_scheduling: true
     max_num_batched_tokens: 65536
