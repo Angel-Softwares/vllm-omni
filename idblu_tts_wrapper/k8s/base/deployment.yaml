@@ -3,9 +3,12 @@ kind: Deployment
 metadata:
   name: idblu-tts
 spec:
-  replicas: 1
+  replicas: 2
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: idblu-tts
@@ -16,6 +19,22 @@ spec:
     spec:
       serviceAccountName: idblu-eks-tts-runtime
       terminationGracePeriodSeconds: 120
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: idblu-tts
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: idblu-tts
       initContainers:
         - name: sync-voices-bootstrap
           image: public.ecr.aws/aws-cli/aws-cli:2.17.40

@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: idblu-tts-private
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: idblu-tts-staging.idblu.internal
+spec:
+  rules:
+    - host: idblu-tts-staging.idblu.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: idblu-tts
+                port:
+                  number: 80

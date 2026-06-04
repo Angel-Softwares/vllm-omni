@@ -6,7 +6,7 @@
 
 Layout:
 
-- `base/`: shared Deployment, Service, Jobs, PVCs, StorageClass, and default runtime config
+- `base/`: shared Deployment, Service, Ingress, PVCs, StorageClass, and default runtime config
 - `staging/`, `release/`, `production/`: environment overlays with namespace creation and nodegroup pinning
 
 Storage model:
@@ -76,6 +76,6 @@ Operational notes:
 - Voice assets live on per-environment EFS-backed PVCs and are hydrated from S3 by both a blocking deployment init container and the `idblu-tts-voice-sync` CronJob.
 - The voice cache stays env-scoped even though all envs use the same EFS filesystem; dynamic provisioning creates separate PVC-backed paths per namespace.
 - Model artifacts under `/cache` live on one fixed cross-environment shared EFS-backed PV/PVC so new pods in any namespace can reuse downloaded model files and reduce cold-start download time.
-- The `idblu-tts-warmup` Job waits for the service to become ready and sends a short streaming TTS request to reduce first-request latency.
+- Each pod runs an in-container warmup process after the wrapper and upstream vLLM health endpoints are reachable. The wrapper readiness endpoint stays `503` until that warmup succeeds, so Services and the ALB only route traffic to warmed pods.
 - The wrapper readiness endpoint (`/ready`) depends on both the upstream vLLM process and the default voice assets being available.
 - The Docker image already exposes the wrapper on `8080` and the upstream server on `8091`, so no container change was required for the initial EKS manifest set.

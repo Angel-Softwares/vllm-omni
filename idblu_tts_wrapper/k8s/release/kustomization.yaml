@@ -10,5 +10,6 @@ resources:
 patches:
   - path: deployment-patch.yaml
   - path: configmap-patch.yaml
+  - path: ingress-patch.yaml
   - path: serviceaccount-patch.yaml
   - path: secretproviderclass-patch.yaml

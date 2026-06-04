@@ -21,6 +21,7 @@ class Settings:
     default_voice_id: str
     voice_cache_dir: str
     health_public: bool
+    warmup_status_file: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -52,4 +53,5 @@ class Settings:
             default_voice_id=default_voice_id,
             voice_cache_dir=voice_cache_dir,
             health_public=_truthy(os.getenv("IDBLU_TTS_PUBLIC_HEALTH"), default=True),
+            warmup_status_file=os.getenv("IDBLU_TTS_WARMUP_STATUS_FILE", "/tmp/idblu-tts-warmup-status.json").strip(),
         )

@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+import json
+from pathlib import Path
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -100,6 +102,14 @@ async def readiness() -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"status": "not_ready", "reason": f"Upstream health check failed: {exc}"},
+        )
+
+    warmup_state = _read_warmup_state(Path(settings.warmup_status_file))
+    if warmup_state.get("status") != "complete":
+        reason = warmup_state.get("reason") or "Warmup has not completed yet"
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "not_ready", "reason": reason, "warmup": warmup_state},
         )
     return JSONResponse(content={"status": "ready", "upstream": payload})
 
@@ -234,3 +244,12 @@ def _media_type_for_format(response_format: str) -> str:
     if normalized == "mp3":
         return "audio/mpeg"
     return "application/octet-stream"
+
+
+def _read_warmup_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"status": "pending", "reason": f"Warmup status file not found: {path}"}
+    try:
+        return json.loads(path.read_text())
+    except Exception as exc:
+        return {"status": "failed", "reason": f"Warmup status file is invalid: {exc}"}

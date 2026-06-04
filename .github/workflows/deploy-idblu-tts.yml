@@ -210,13 +210,6 @@ jobs:
             --name "${EKS_CLUSTER_NAME}" \
             --region "${AWS_REGION}"
 
-      - name: Reset warmup job
-        shell: bash
-        run: |
-          if kubectl get namespace "${{ needs.resolve.outputs.namespace }}" >/dev/null 2>&1; then
-            kubectl -n "${{ needs.resolve.outputs.namespace }}" delete job idblu-tts-warmup --ignore-not-found
-          fi
-
       - name: Deploy overlay
         shell: bash
         run: |
@@ -234,8 +227,3 @@ jobs:
         run: |
           kubectl -n "${{ needs.resolve.outputs.namespace }}" get pods -l app.kubernetes.io/name=idblu-tts -o wide
           kubectl -n "${{ needs.resolve.outputs.namespace }}" get deployment idblu-tts -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
-
-      - name: Wait for warmup job
-        shell: bash
-        run: |
-          kubectl -n "${{ needs.resolve.outputs.namespace }}" wait --for=condition=complete job/idblu-tts-warmup --timeout=30m
