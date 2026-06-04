@@ -4,5 +4,5 @@ metadata:
   name: idblu-tts-config
 data:
   IDBLU_TTS_DEPLOY_ENV: release
-  IDBLU_TTS_VOICE_BUCKET: voice-agent-audio-registry
   IDBLU_TTS_VOICE_PREFIX: tts/release/voices
+  IDBLU_TTS_DEFAULT_VOICE_ID: release-bakeoff-29-danielle-cormier-20260522t204703080z

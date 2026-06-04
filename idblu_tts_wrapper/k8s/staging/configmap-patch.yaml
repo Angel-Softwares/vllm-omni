@@ -4,5 +4,5 @@ metadata:
   name: idblu-tts-config
 data:
   IDBLU_TTS_DEPLOY_ENV: staging
-  IDBLU_TTS_VOICE_BUCKET: voice-agent-audio-registry
   IDBLU_TTS_VOICE_PREFIX: tts/staging/voices
+  IDBLU_TTS_DEFAULT_VOICE_ID: staging-danielle-cormier-20260520t121941751z
