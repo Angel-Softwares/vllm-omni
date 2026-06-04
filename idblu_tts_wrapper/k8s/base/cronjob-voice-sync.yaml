@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: idblu-tts-voice-sync
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: idblu-tts-voice-sync
+        spec:
+          serviceAccountName: idblu-eks-tts-runtime
+          restartPolicy: OnFailure
+          containers:
+            - name: sync
+              image: public.ecr.aws/aws-cli/aws-cli:2.17.40
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  mkdir -p /data/voices
+                  aws s3 sync "s3://${IDBLU_TTS_VOICE_BUCKET}/${IDBLU_TTS_VOICE_PREFIX}" /data/voices --delete
+              envFrom:
+                - configMapRef:
+                    name: idblu-tts-config
+              volumeMounts:
+                - name: voice-cache
+                  mountPath: /data/voices
+          volumes:
+            - name: voice-cache
+              persistentVolumeClaim:
+                claimName: idblu-tts-voice-cache

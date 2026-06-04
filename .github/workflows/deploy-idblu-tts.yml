@@ -3,8 +3,21 @@ name: Deploy ID-BLU TTS
 on:
   push:
     branches:
-      - idblu-tts-wrapper-docker
+      - idblu-tts-*
   workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Deployment environment
+        required: true
+        type: choice
+        options:
+          - staging
+          - release
+          - production
+      image_tag:
+        description: Existing ECR image tag to deploy
+        required: true
+        type: string
 
 permissions:
   id-token: write
@@ -15,15 +28,79 @@ env:
   AWS_REGION: ca-central-1
   AWS_ACCOUNT_ID: "449678530532"
   ECR_REPOSITORY: idblu-tts
-  ASG_NAME: idblu-tts-auto-tts-asg-shared
-  HEALTH_URL: https://tts-auto.account.idblu.com/health
+  EKS_CLUSTER_NAME: idblu-eks-shared
   DOCKERFILE_PATH: docker/Dockerfile.idblu_tts
+  K8S_ROOT: idblu_tts_wrapper/k8s
 
 jobs:
-  deploy:
-    name: Build, push & deploy idblu_tts
+  resolve:
+    name: Resolve deployment target
     runs-on: ubuntu-latest
-    environment: production
+    outputs:
+      target_env: ${{ steps.target.outputs.target_env }}
+      namespace: ${{ steps.target.outputs.namespace }}
+      overlay: ${{ steps.target.outputs.overlay }}
+
+    steps:
+      - name: Resolve target environment
+        id: target
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET_ENV="${{ github.event.inputs.target_environment }}"
+          else
+            TARGET_ENV="staging"
+          fi
+
+          case "$TARGET_ENV" in
+            staging|release|production) ;;
+            *)
+              echo "Unsupported target environment: $TARGET_ENV"
+              exit 1
+              ;;
+          esac
+
+          echo "target_env=$TARGET_ENV" >> "$GITHUB_OUTPUT"
+          echo "namespace=idblu-tts-$TARGET_ENV" >> "$GITHUB_OUTPUT"
+          echo "overlay=${K8S_ROOT}/$TARGET_ENV" >> "$GITHUB_OUTPUT"
+
+  changes:
+    name: Detect image changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    outputs:
+      image: ${{ steps.filter.outputs.image }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 20
+
+      - name: Detect files that require an image rebuild
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          base: ${{ github.ref }}
+          filters: |
+            image:
+              - '.github/workflows/deploy-idblu-tts.yml'
+              - 'docker/**'
+              - 'idblu_tts_wrapper/*.py'
+              - 'vllm_omni/**'
+              - 'pyproject.toml'
+              - 'setup.py'
+              - 'requirements/**'
+
+  build:
+    name: Build and push idblu_tts image
+    runs-on: ubuntu-latest
+    needs:
+      - resolve
+      - changes
+    if: github.event_name == 'push' && needs.changes.outputs.image == 'true'
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      image_sha: ${{ steps.tag.outputs.image_sha }}
 
     steps:
       - uses: actions/checkout@v6
@@ -31,7 +108,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.IDBLU_TTS_AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.ACTIONS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -39,13 +116,16 @@ jobs:
 
       - name: Compute image tag
         id: tag
+        shell: bash
         run: |
           SHA=$(git rev-parse --short HEAD)
           VERSION="0.1.0-${SHA}"
           ECR_REG="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          IMAGE="${ECR_REG}/${ECR_REPOSITORY}:${VERSION}"
+          IMAGE_SHA="${ECR_REG}/${ECR_REPOSITORY}:${VERSION}"
+          IMAGE_ENV="${ECR_REG}/${ECR_REPOSITORY}:${{ needs.resolve.outputs.target_env }}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "image=${IMAGE}" >> $GITHUB_OUTPUT
+          echo "image_sha=${IMAGE_SHA}" >> $GITHUB_OUTPUT
+          echo "image_env=${IMAGE_ENV}" >> $GITHUB_OUTPUT
           echo "ecr_reg=${ECR_REG}" >> $GITHUB_OUTPUT
 
       - name: Free disk space
@@ -69,95 +149,81 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ steps.tag.outputs.image }}
-            ${{ steps.tag.outputs.ecr_reg }}/${{ env.ECR_REPOSITORY }}:latest
+            ${{ steps.tag.outputs.image_sha }}
+            ${{ steps.tag.outputs.image_env }}
           build-args: |
             FORK_COMMIT=${{ github.sha }}
             WRAPPER_VERSION=${{ steps.tag.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Update ASG launch template and trigger instance refresh
+  deploy:
+    name: Deploy idblu_tts
+    runs-on: ubuntu-latest
+    needs:
+      - resolve
+      - changes
+      - build
+    if: ${{ always() && needs.resolve.result == 'success' && (github.event_name != 'push' || needs.changes.result == 'success') && (github.event_name != 'push' || needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    environment: ${{ needs.resolve.outputs.target_env }}
+    concurrency:
+      group: idblu-tts-${{ needs.resolve.outputs.target_env }}
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve image to deploy
+        id: image
+        shell: bash
         run: |
-          VERSION="${{ steps.tag.outputs.version }}"
-          ECR_REG="${{ steps.tag.outputs.ecr_reg }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DEPLOY_TAG="${{ github.event.inputs.image_tag }}"
+          elif [ "${{ needs.changes.outputs.image }}" = "true" ]; then
+            DEPLOY_TAG="${{ needs.build.outputs.version }}"
+          else
+            DEPLOY_TAG="${{ needs.resolve.outputs.target_env }}"
+          fi
 
-          LT_ID=$(aws autoscaling describe-auto-scaling-groups \
-            --auto-scaling-group-names "$ASG_NAME" \
-            --query "AutoScalingGroups[0].LaunchTemplate.LaunchTemplateId" \
-            --output text)
-
-          if [ -z "$LT_ID" ] || [ "$LT_ID" = "None" ]; then
-            echo "Could not find launch template for ASG $ASG_NAME"
+          if [ -z "$DEPLOY_TAG" ]; then
+            echo "Deploy tag is empty"
             exit 1
           fi
 
-          CURRENT_UD=$(aws ec2 describe-launch-template-versions \
-            --launch-template-id "$LT_ID" \
-            --versions '$Default' \
-            --query "LaunchTemplateVersions[0].LaunchTemplateData.UserData" \
-            --output text | base64 -d)
+          IMAGE_REF="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${DEPLOY_TAG}"
+          echo "deploy_tag=$DEPLOY_TAG" >> "$GITHUB_OUTPUT"
+          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
 
-          NEW_UD=$(echo "$CURRENT_UD" | \
-            sed "s|${ECR_REPOSITORY}:[^ \"']*|${ECR_REPOSITORY}:${VERSION}|g" | \
-            base64)
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
 
-          NEW_VER=$(aws ec2 create-launch-template-version \
-            --launch-template-id "$LT_ID" \
-            --source-version '$Default' \
-            --launch-template-data "{\"UserData\":\"${NEW_UD//$'\n'/}\"}" \
-            --query "LaunchTemplateVersion.VersionNumber" \
-            --output text)
-
-          aws ec2 modify-launch-template \
-            --launch-template-id "$LT_ID" \
-            --default-version "$NEW_VER"
-
-          aws autoscaling update-auto-scaling-group \
-            --auto-scaling-group-name "$ASG_NAME" \
-            --launch-template "LaunchTemplateId=${LT_ID},Version=\$Default"
-
-          REFRESH_ID=$(aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name "$ASG_NAME" \
-            --preferences '{"MinHealthyPercentage":50,"InstanceWarmup":180}' \
-            --query "InstanceRefreshId" \
-            --output text)
-
-          ELAPSED=0
-          MAX_WAIT=3600
-          while [ $ELAPSED -lt $MAX_WAIT ]; do
-            REFRESH_STATUS=$(aws autoscaling describe-instance-refreshes \
-              --auto-scaling-group-name "$ASG_NAME" \
-              --instance-refresh-ids "$REFRESH_ID" \
-              --query "InstanceRefreshes[0].Status" \
-              --output text 2>/dev/null || echo "InProgress")
-
-            case "$REFRESH_STATUS" in
-              Successful)
-                echo "Instance refresh complete"
-                break
-                ;;
-              Failed|Cancelled|RollbackFailed)
-                echo "Instance refresh failed with status $REFRESH_STATUS"
-                exit 1
-                ;;
-            esac
-
-            sleep 15
-            ELAPSED=$((ELAPSED + 15))
-          done
-
-          if [ $ELAPSED -ge $MAX_WAIT ]; then
-            echo "Timed out waiting for instance refresh"
-            exit 1
-          fi
-
-      - name: Wait for idblu_tts health
+      - name: Update kubeconfig
+        shell: bash
         run: |
-          for i in $(seq 1 18); do
-            CODE=$(curl -sf --max-time 10 -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null || echo "000")
-            echo "[$i/18] HTTP $CODE"
-            [ "$CODE" = "200" ] && exit 0
-            sleep 20
-          done
-          exit 1
+          aws eks update-kubeconfig \
+            --name "${EKS_CLUSTER_NAME}" \
+            --region "${AWS_REGION}"
+
+      - name: Deploy overlay
+        shell: bash
+        run: |
+          kubectl kustomize "${{ needs.resolve.outputs.overlay }}" \
+            | sed -E "s|image: .*/${ECR_REPOSITORY}:[^[:space:]]+|image: ${{ steps.image.outputs.image_ref }}|g" \
+            | kubectl apply --validate=false -f -
+
+      - name: Wait for rollout
+        shell: bash
+        run: |
+          kubectl -n "${{ needs.resolve.outputs.namespace }}" rollout status deployment/idblu-tts --timeout=30m
+
+      - name: Show deployed pods
+        shell: bash
+        run: |
+          kubectl -n "${{ needs.resolve.outputs.namespace }}" get pods -l app.kubernetes.io/name=idblu-tts -o wide
+          kubectl -n "${{ needs.resolve.outputs.namespace }}" get deployment idblu-tts -o jsonpath='{.spec.template.spec.containers[0].image}'; echo

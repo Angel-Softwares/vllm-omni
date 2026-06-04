@@ -1,0 +1,15 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: idblu-tts-voice-efs
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: fs-00875f3440f5a7f74
+  basePath: /idblu-tts/voices
+  directoryPerms: "750"
+  subPathPattern: /${.PVC.namespace}/${.PVC.name}
+  ensureUniqueDirectory: "true"
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+allowVolumeExpansion: true

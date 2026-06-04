@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: idblu-tts
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/environment: production
+    spec:
+      nodeSelector:
+        workload: accelerated
+        accelerator: nvidia
+      containers:
+        - name: idblu-tts
+          image: 449678530532.dkr.ecr.ca-central-1.amazonaws.com/idblu-tts:production

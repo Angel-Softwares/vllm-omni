@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: idblu-tts-model-cache
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: idblu-tts-model-cache
+  resources:
+    requests:
+      storage: 80Gi
