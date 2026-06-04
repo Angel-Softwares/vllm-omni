@@ -9,7 +9,8 @@ spec:
         app.kubernetes.io/environment: release
     spec:
       nodeSelector:
-        eks.amazonaws.com/nodegroup: idblu-eks-shared-gpu
+        workload: accelerated
+        accelerator: nvidia
       containers:
         - name: idblu-tts
           image: 449678530532.dkr.ecr.ca-central-1.amazonaws.com/idblu-tts:release
