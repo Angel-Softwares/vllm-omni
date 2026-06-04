@@ -37,7 +37,7 @@ stages:
 
   - stage_id: 1
     max_num_seqs: 4
-    gpu_memory_utilization: 0.5
+    gpu_memory_utilization: 0.4
     enforce_eager: true
     async_scheduling: true
     max_num_batched_tokens: 65536
