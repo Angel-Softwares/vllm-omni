@@ -3,6 +3,10 @@ kind: Deployment
 metadata:
   name: idblu-tts
 spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+    rollingUpdate: null
   template:
     metadata:
       labels:
