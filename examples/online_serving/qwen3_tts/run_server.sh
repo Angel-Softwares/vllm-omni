@@ -129,6 +129,14 @@ else
     echo "Using GPU memory utilization from deploy config"
 fi
 
+TTS_INSTRUCTIONS_ARGS=()
+if [ -n "${IDBLU_TTS_MAX_INSTRUCTIONS_LENGTH:-}" ]; then
+    TTS_INSTRUCTIONS_ARGS+=(--tts-max-instructions-length "$IDBLU_TTS_MAX_INSTRUCTIONS_LENGTH")
+    echo "Using TTS max instructions length override: $IDBLU_TTS_MAX_INSTRUCTIONS_LENGTH"
+else
+    echo "Using TTS max instructions length from deploy config/default"
+fi
+
 preflight_speech_tokenizer
 
 vllm-omni serve "$MODEL" \
@@ -136,5 +144,6 @@ vllm-omni serve "$MODEL" \
     --host "$HOST" \
     --port "$PORT" \
     "${GPU_MEMORY_ARGS[@]}" \
+    "${TTS_INSTRUCTIONS_ARGS[@]}" \
     --trust-remote-code \
     --omni
