@@ -1,6 +1,8 @@
 import os
+import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -12,6 +14,7 @@ os.environ.setdefault("IDBLU_TTS_DEFAULT_VOICE_ID", "eliane")
 os.environ.setdefault("IDBLU_TTS_VOICE_CACHE_DIR", str(TEST_CACHE_DIR))
 
 from idblu_tts_wrapper.app import app
+from idblu_tts_wrapper.app import _upstream_error_detail
 
 
 def test_health_is_liveness_only():
@@ -92,13 +95,10 @@ def test_speech_injects_local_voice_assets(monkeypatch, client_with_voice_cache)
             yield b"pcm"
 
     class FakeClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
+        async def aclose(self):
             return None
 
-        def stream(self, method, url, json):
+        def stream(self, method, url, headers, json):
             captured["json"] = json
             return FakeStreamResponse()
 
@@ -145,6 +145,56 @@ def test_speech_returns_422_when_voice_missing_ref_text(client_with_voice_cache)
 
     assert response.status_code == 422
     assert response.json()["detail"] == "Voice 'eliane' is missing ref_text"
+
+
+def test_speech_returns_upstream_error_body_before_streaming(monkeypatch, client_with_voice_cache):
+    client, _ = client_with_voice_cache
+
+    class FakeStreamResponse:
+        status_code = 400
+        reason_phrase = "Bad Request"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def aread(self):
+            return b'{"detail":"bad voice payload"}'
+
+    class FakeClient:
+        async def aclose(self):
+            return None
+
+        def stream(self, method, url, headers, json):
+            return FakeStreamResponse()
+
+    monkeypatch.setattr("idblu_tts_wrapper.app.httpx.AsyncClient", lambda *args, **kwargs: FakeClient())
+
+    response = client.post(
+        "/v1/audio/speech",
+        headers={"X-Admin-Key": "test-key"},
+        json={"input": "bonjour", "voice_id": "eliane"},
+    )
+
+    assert response.status_code == 502
+    assert "400 Bad Request" in response.json()["detail"]
+    assert "bad voice payload" in response.json()["detail"]
+
+
+def test_upstream_error_detail_includes_status_body_and_truncates():
+    response = httpx.Response(
+        400,
+        content=("x" * 5000).encode("utf-8"),
+        request=httpx.Request("POST", "http://127.0.0.1:8091/v1/audio/speech"),
+    )
+
+    detail = asyncio.run(_upstream_error_detail(response))
+
+    assert detail.startswith("400 Bad Request: ")
+    assert len(detail) < 4200
+    assert detail.endswith("...<truncated>")
 
 
 def _write_voice_cache(cache_dir: Path) -> None:

@@ -18,6 +18,7 @@ from idblu_tts_wrapper.voice_registry import VoiceRegistry, VoiceValidationError
 
 logger = logging.getLogger(__name__)
 UPSTREAM_STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=None, write=15.0, pool=5.0)
+UPSTREAM_ERROR_BODY_LOG_LIMIT = 4096
 
 
 class SpeechRequest(BaseModel):
@@ -54,6 +55,23 @@ class SpeechRequest(BaseModel):
 settings = Settings.from_env()
 voice_registry = VoiceRegistry(settings.voice_cache_dir)
 app = FastAPI(title="idblu_tts", version="1.0.0")
+
+
+async def _upstream_error_detail(response: httpx.Response) -> str:
+    body = ""
+    try:
+        content = await response.aread()
+        body = content.decode("utf-8", errors="replace").strip()
+    except Exception as exc:
+        body = f"<failed to read upstream error body: {exc}>"
+
+    if len(body) > UPSTREAM_ERROR_BODY_LOG_LIMIT:
+        body = body[:UPSTREAM_ERROR_BODY_LOG_LIMIT] + "...<truncated>"
+
+    reason = response.reason_phrase or "error"
+    if body:
+        return f"{response.status_code} {reason}: {body}"
+    return f"{response.status_code} {reason}: <empty body>"
 
 
 async def _authorize(
@@ -192,45 +210,71 @@ async def create_speech(request: SpeechRequest, raw_request: Request) -> Streami
         len(payload.get("ref_text", "")) if isinstance(payload.get("ref_text"), str) else 0,
     )
 
+    client = httpx.AsyncClient(timeout=UPSTREAM_STREAM_TIMEOUT)
+    stream_context = client.stream(
+        "POST",
+        f"{settings.upstream_url}/v1/audio/speech",
+        headers={"X-TTS-Trace-Id": trace_id},
+        json=payload,
+    )
+    try:
+        upstream_started_at = time.monotonic()
+        logger.info("[%s] Wrapper upstream request starting after %.3fs", trace_id, upstream_started_at - request_received_at)
+        upstream_response = await stream_context.__aenter__()
+        if upstream_response.status_code >= 400:
+            detail = await _upstream_error_detail(upstream_response)
+            logger.warning("[%s] Upstream TTS request returned %s", trace_id, detail)
+            await stream_context.__aexit__(None, None, None)
+            await client.aclose()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Upstream TTS request failed: {detail}",
+            )
+    except HTTPException:
+        raise
+    except HTTPError as exc:
+        await client.aclose()
+        logger.warning("[%s] Upstream TTS request failed: %s", trace_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Upstream TTS request failed: {exc}",
+        ) from exc
+    except Exception:
+        await client.aclose()
+        raise
+
     async def stream() -> AsyncGenerator[bytes, None]:
-        async with httpx.AsyncClient(timeout=UPSTREAM_STREAM_TIMEOUT) as client:
-            try:
-                upstream_started_at = time.monotonic()
-                logger.info("[%s] Wrapper upstream request starting after %.3fs", trace_id, upstream_started_at - request_received_at)
-                async with client.stream(
-                    "POST",
-                    f"{settings.upstream_url}/v1/audio/speech",
-                    headers={"X-TTS-Trace-Id": trace_id},
-                    json=payload,
-                ) as response:
-                    response.raise_for_status()
-                    first_upstream_chunk_logged = False
-                    first_downstream_chunk_logged = False
-                    async for chunk in response.aiter_bytes():
-                        if chunk:
-                            if not first_upstream_chunk_logged:
-                                logger.info(
-                                    "[%s] Wrapper first upstream audio chunk received after %.3fs (%d bytes)",
-                                    trace_id,
-                                    time.monotonic() - request_received_at,
-                                    len(chunk),
-                                )
-                                first_upstream_chunk_logged = True
-                            if not first_downstream_chunk_logged:
-                                logger.info(
-                                    "[%s] Wrapper first downstream chunk yielded after %.3fs (%d bytes)",
-                                    trace_id,
-                                    time.monotonic() - request_received_at,
-                                    len(chunk),
-                                )
-                                first_downstream_chunk_logged = True
-                            yield chunk
-            except HTTPError as exc:
-                logger.warning("[%s] Upstream TTS request failed: %s", trace_id, exc)
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Upstream TTS request failed: {exc}",
-                ) from exc
+        try:
+            first_upstream_chunk_logged = False
+            first_downstream_chunk_logged = False
+            async for chunk in upstream_response.aiter_bytes():
+                if chunk:
+                    if not first_upstream_chunk_logged:
+                        logger.info(
+                            "[%s] Wrapper first upstream audio chunk received after %.3fs (%d bytes)",
+                            trace_id,
+                            time.monotonic() - request_received_at,
+                            len(chunk),
+                        )
+                        first_upstream_chunk_logged = True
+                    if not first_downstream_chunk_logged:
+                        logger.info(
+                            "[%s] Wrapper first downstream chunk yielded after %.3fs (%d bytes)",
+                            trace_id,
+                            time.monotonic() - request_received_at,
+                            len(chunk),
+                        )
+                        first_downstream_chunk_logged = True
+                    yield chunk
+        except HTTPError as exc:
+            logger.warning("[%s] Upstream TTS stream failed: %s", trace_id, exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Upstream TTS stream failed: {exc}",
+            ) from exc
+        finally:
+            await stream_context.__aexit__(None, None, None)
+            await client.aclose()
 
     return StreamingResponse(stream(), media_type=_media_type_for_format(payload["response_format"]))
 
