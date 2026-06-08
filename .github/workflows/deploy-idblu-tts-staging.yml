@@ -5,19 +5,6 @@ on:
     branches:
       - idblu-tts-*
   workflow_dispatch:
-    inputs:
-      target_environment:
-        description: Deployment environment
-        required: true
-        type: choice
-        options:
-          - staging
-          - release
-          - production
-      image_tag:
-        description: Existing ECR image tag to deploy
-        required: true
-        type: string
 
 permissions:
   id-token: write
@@ -46,20 +33,7 @@ jobs:
         id: target
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TARGET_ENV="${{ github.event.inputs.target_environment }}"
-          else
-            TARGET_ENV="staging"
-          fi
-
-          case "$TARGET_ENV" in
-            staging|release|production) ;;
-            *)
-              echo "Unsupported target environment: $TARGET_ENV"
-              exit 1
-              ;;
-          esac
-
+          TARGET_ENV="staging"
           echo "target_env=$TARGET_ENV" >> "$GITHUB_OUTPUT"
           echo "namespace=idblu-tts-$TARGET_ENV" >> "$GITHUB_OUTPUT"
           echo "overlay=${K8S_ROOT}/$TARGET_ENV" >> "$GITHUB_OUTPUT"
@@ -83,7 +57,7 @@ jobs:
           base: ${{ github.ref }}
           filters: |
             image:
-              - '.github/workflows/deploy-idblu-tts.yml'
+              - '.github/workflows/deploy-idblu-tts-staging.yml'
               - 'docker/**'
               - 'idblu_tts_wrapper/*.py'
               - 'vllm_omni/**'
@@ -183,9 +157,7 @@ jobs:
         id: image
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            DEPLOY_TAG="${{ github.event.inputs.image_tag }}"
-          elif [ "${{ needs.changes.outputs.image }}" = "true" ]; then
+          if [ "${{ needs.changes.outputs.image }}" = "true" ]; then
             DEPLOY_TAG="${{ needs.build.outputs.version }}"
           else
             DEPLOY_TAG="${{ needs.resolve.outputs.target_env }}"

@@ -25,10 +25,17 @@ kubectl apply -k idblu_tts_wrapper/k8s/production
 CI/CD behavior:
 
 - Pushes to `idblu-tts-*` branches automatically build and deploy the `staging` overlay.
-- Manual GitHub Actions runs can deploy `staging`, `release`, or `production`, and require an explicit existing `image_tag` to deploy.
+- Manual GitHub Actions runs use `.github/workflows/promote-idblu-tts.yml` to promote `release` or `production`.
 - The workflow is split into separate build and deploy jobs.
 - Push-triggered staging runs build a commit-specific image tag and then deploy that exact tag.
 - The build job also pushes the environment tag consumed by the overlays (`staging`, `release`, or `production`).
+
+Manual promotion inputs:
+
+- `environment`: `release` or `production`
+- `release_version`: release label for auditability
+- `git_ref`: tag or commit SHA to check out before applying manifests
+- `image_digest`: full immutable ECR image reference using `449678530532.dkr.ecr.ca-central-1.amazonaws.com/idblu-tts@sha256:<64 lowercase hex>`
 
 Before applying:
 
@@ -38,7 +45,7 @@ Before applying:
 4. Confirm the shared model-cache access point `fsap-0af9d9b5487be6413` exists on that file system.
 5. Create an AWS Secrets Manager secret containing JSON keys `IDBLU_TTS_ADMIN_KEY` and `HF_TOKEN`.
 6. Review the env-specific patch files for nodegroup, IRSA role ARN, secret name, voice S3 prefix, and image tag.
-7. The overlays expect environment tags on the same ECR repository: `:staging`, `:release`, and `:production`. Adjust the image references if your tagging scheme differs.
+7. The overlays expect environment tags on the same ECR repository for staging (`:staging`). Manual release and production promotion is digest-pinned through the GitHub Actions workflow.
 8. Ensure the IRSA role used by `idblu-eks-tts-runtime` can read the Secrets Manager secret and `s3://voice-agent-audio-registry/<env-prefix>`.
 
 Current env-specific values are defined directly in these patch files:
