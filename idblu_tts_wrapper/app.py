@@ -9,7 +9,7 @@ from typing import Any, AsyncGenerator
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from httpx import HTTPError
+from httpx import HTTPError, HTTPStatusError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -192,45 +192,68 @@ async def create_speech(request: SpeechRequest, raw_request: Request) -> Streami
         len(payload.get("ref_text", "")) if isinstance(payload.get("ref_text"), str) else 0,
     )
 
+    client = httpx.AsyncClient(timeout=UPSTREAM_STREAM_TIMEOUT)
+    try:
+        upstream_started_at = time.monotonic()
+        logger.info(
+            "[%s] Wrapper upstream request starting after %.3fs",
+            trace_id,
+            upstream_started_at - request_received_at,
+        )
+        upstream_request = client.build_request(
+            "POST",
+            f"{settings.upstream_url}/v1/audio/speech",
+            headers={"X-TTS-Trace-Id": trace_id},
+            json=payload,
+        )
+        response = await client.send(upstream_request, stream=True)
+        try:
+            response.raise_for_status()
+        except HTTPStatusError as exc:
+            detail = await _format_upstream_error_detail(response)
+            logger.warning("[%s] Upstream TTS request failed before streaming: %s", trace_id, detail)
+            await response.aclose()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=detail,
+            ) from exc
+    except HTTPException:
+        await client.aclose()
+        raise
+    except HTTPError as exc:
+        await client.aclose()
+        logger.warning("[%s] Upstream TTS request failed before streaming: %s", trace_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Upstream TTS request failed: {exc}",
+        ) from exc
+
     async def stream() -> AsyncGenerator[bytes, None]:
-        async with httpx.AsyncClient(timeout=UPSTREAM_STREAM_TIMEOUT) as client:
-            try:
-                upstream_started_at = time.monotonic()
-                logger.info("[%s] Wrapper upstream request starting after %.3fs", trace_id, upstream_started_at - request_received_at)
-                async with client.stream(
-                    "POST",
-                    f"{settings.upstream_url}/v1/audio/speech",
-                    headers={"X-TTS-Trace-Id": trace_id},
-                    json=payload,
-                ) as response:
-                    response.raise_for_status()
-                    first_upstream_chunk_logged = False
-                    first_downstream_chunk_logged = False
-                    async for chunk in response.aiter_bytes():
-                        if chunk:
-                            if not first_upstream_chunk_logged:
-                                logger.info(
-                                    "[%s] Wrapper first upstream audio chunk received after %.3fs (%d bytes)",
-                                    trace_id,
-                                    time.monotonic() - request_received_at,
-                                    len(chunk),
-                                )
-                                first_upstream_chunk_logged = True
-                            if not first_downstream_chunk_logged:
-                                logger.info(
-                                    "[%s] Wrapper first downstream chunk yielded after %.3fs (%d bytes)",
-                                    trace_id,
-                                    time.monotonic() - request_received_at,
-                                    len(chunk),
-                                )
-                                first_downstream_chunk_logged = True
-                            yield chunk
-            except HTTPError as exc:
-                logger.warning("[%s] Upstream TTS request failed: %s", trace_id, exc)
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Upstream TTS request failed: {exc}",
-                ) from exc
+        first_upstream_chunk_logged = False
+        first_downstream_chunk_logged = False
+        try:
+            async for chunk in response.aiter_bytes():
+                if chunk:
+                    if not first_upstream_chunk_logged:
+                        logger.info(
+                            "[%s] Wrapper first upstream audio chunk received after %.3fs (%d bytes)",
+                            trace_id,
+                            time.monotonic() - request_received_at,
+                            len(chunk),
+                        )
+                        first_upstream_chunk_logged = True
+                    if not first_downstream_chunk_logged:
+                        logger.info(
+                            "[%s] Wrapper first downstream chunk yielded after %.3fs (%d bytes)",
+                            trace_id,
+                            time.monotonic() - request_received_at,
+                            len(chunk),
+                        )
+                        first_downstream_chunk_logged = True
+                    yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
 
     return StreamingResponse(stream(), media_type=_media_type_for_format(payload["response_format"]))
 
@@ -253,3 +276,12 @@ def _read_warmup_state(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text())
     except Exception as exc:
         return {"status": "failed", "reason": f"Warmup status file is invalid: {exc}"}
+
+
+async def _format_upstream_error_detail(response: httpx.Response) -> str:
+    body = (await response.aread()).decode("utf-8", errors="replace").strip()
+    if len(body) > 1000:
+        body = f"{body[:1000]}..."
+    if body:
+        return f"Upstream TTS request failed: upstream returned {response.status_code}: {body}"
+    return f"Upstream TTS request failed: upstream returned {response.status_code}"

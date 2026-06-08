@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -145,6 +146,50 @@ def test_speech_returns_422_when_voice_missing_ref_text(client_with_voice_cache)
 
     assert response.status_code == 422
     assert response.json()["detail"] == "Voice 'eliane' is missing ref_text"
+
+
+def test_speech_returns_json_error_when_upstream_rejects_before_streaming(monkeypatch, client_with_voice_cache):
+    client, _ = client_with_voice_cache
+
+    class FakeStreamResponse:
+        status_code = 400
+
+        def __init__(self):
+            self._body = b'{"detail":"Reference audio too long"}'
+
+        def raise_for_status(self):
+            request = httpx.Request("POST", "http://127.0.0.1:8091/v1/audio/speech")
+            response = httpx.Response(self.status_code, request=request, content=self._body)
+            raise httpx.HTTPStatusError("bad request", request=request, response=response)
+
+        async def aread(self):
+            return self._body
+
+        async def aclose(self):
+            return None
+
+    class FakeClient:
+        def build_request(self, method, url, headers=None, json=None):
+            return httpx.Request(method, url, headers=headers, json=json)
+
+        async def send(self, request, stream=False):
+            return FakeStreamResponse()
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr("idblu_tts_wrapper.app.httpx.AsyncClient", lambda *args, **kwargs: FakeClient())
+
+    response = client.post(
+        "/v1/audio/speech",
+        headers={"X-Admin-Key": "test-key"},
+        json={"input": "bonjour", "voice_id": "eliane"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == (
+        'Upstream TTS request failed: upstream returned 400: {"detail":"Reference audio too long"}'
+    )
 
 
 def _write_voice_cache(cache_dir: Path) -> None:
