@@ -12,6 +12,10 @@ spec:
       labels:
         app.kubernetes.io/environment: staging
     spec:
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: idblu-tts-model-cache-staging
       nodeSelector:
         workload: accelerated
         accelerator: nvidia

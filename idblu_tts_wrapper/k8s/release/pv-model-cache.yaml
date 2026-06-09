@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: idblu-tts-model-cache-release
+spec:
+  capacity:
+    storage: 80Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  mountOptions:
+    - tls
+  claimRef:
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    name: idblu-tts-model-cache-release
+    namespace: idblu-tts-release
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: fs-00875f3440f5a7f74::fsap-0af9d9b5487be6413

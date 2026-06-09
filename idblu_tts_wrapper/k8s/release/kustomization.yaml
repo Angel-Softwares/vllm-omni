@@ -6,6 +6,8 @@ namespace: idblu-tts-release
 resources:
   - ../base
   - namespace.yaml
+  - pv-model-cache.yaml
+  - pvc-model-cache.yaml
 
 patches:
   - path: deployment-patch.yaml

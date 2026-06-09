@@ -11,7 +11,7 @@ Layout:
 
 Storage model:
 
-- Model cache (`/cache`): one cross-environment shared EFS-backed PV/PVC. This is intentionally shared so all envs can reuse downloaded model artifacts and reduce cold-start download time.
+- Model cache (`/cache`): one env-specific static PV/PVC per namespace, all backed by the same shared EFS access point. This avoids cross-namespace PVC binding conflicts while still reusing the same underlying model artifact store.
 - Voice cache (`/data/voices`): per-environment EFS-backed PVCs created through dynamic EFS CSI provisioning. This is intentionally isolated by namespace/env because each env syncs a different S3 voice prefix.
 
 Apply an environment:
@@ -82,7 +82,7 @@ Operational notes:
 - Shared model-cache access point: `fsap-0af9d9b5487be6413`
 - Voice assets live on per-environment EFS-backed PVCs and are hydrated from S3 by both a blocking deployment init container and the `idblu-tts-voice-sync` CronJob.
 - The voice cache stays env-scoped even though all envs use the same EFS filesystem; dynamic provisioning creates separate PVC-backed paths per namespace.
-- Model artifacts under `/cache` live on one fixed cross-environment shared EFS-backed PV/PVC so new pods in any namespace can reuse downloaded model files and reduce cold-start download time.
+- Model artifacts under `/cache` use one static PV/PVC per environment namespace, but all three point at the same EFS access point so new pods can still reuse downloaded model files without cross-namespace PVC conflicts.
 - Each pod runs an in-container warmup process after the wrapper and upstream vLLM health endpoints are reachable. The wrapper readiness endpoint stays `503` until that warmup succeeds, so Services and the ALB only route traffic to warmed pods.
 - The wrapper readiness endpoint (`/ready`) depends on both the upstream vLLM process and the default voice assets being available.
 - The Docker image already exposes the wrapper on `8080` and the upstream server on `8091`, so no container change was required for the initial EKS manifest set.

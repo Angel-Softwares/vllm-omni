@@ -8,6 +8,10 @@ spec:
       labels:
         app.kubernetes.io/environment: release
     spec:
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: idblu-tts-model-cache-release
       nodeSelector:
         workload: accelerated
         accelerator: nvidia

@@ -7,8 +7,6 @@ resources:
   - ingress.yaml
   - cronjob-voice-sync.yaml
   - poddisruptionbudget.yaml
-  - pv-model-cache-efs.yaml
-  - pvc-model-cache.yaml
   - storageclass-voice-efs.yaml
   - service.yaml
   - pvc-voice-cache.yaml
