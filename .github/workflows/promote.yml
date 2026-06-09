@@ -1,0 +1,163 @@
+name: Promote ID-BLU TTS
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Deployment environment
+        required: true
+        type: choice
+        options:
+          - release
+          - production
+      release_version:
+        description: Release version label for this promotion
+        required: true
+        type: string
+      git_ref:
+        description: Git tag or commit SHA to check out for manifest source
+        required: true
+        type: string
+      image_digest:
+        description: Full ECR image reference pinned by digest
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  AWS_REGION: ca-central-1
+  EKS_CLUSTER_NAME: idblu-eks-shared
+  K8S_ROOT: idblu_tts_wrapper/k8s
+  BASE_IMAGE_NAME: 449678530532.dkr.ecr.ca-central-1.amazonaws.com/idblu-tts
+  WORKLOAD_NAME: idblu-tts
+
+jobs:
+  promote:
+    name: Promote to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: idblu-tts-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      TARGET_ENVIRONMENT: ${{ inputs.environment }}
+      RELEASE_VERSION: ${{ inputs.release_version }}
+      GIT_REF: ${{ inputs.git_ref }}
+      IMAGE_DIGEST: ${{ inputs.image_digest }}
+
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          EXPECTED_IMAGE_PREFIX="${BASE_IMAGE_NAME}@sha256:"
+
+          case "$TARGET_ENVIRONMENT" in
+            release|production) ;;
+            *)
+              echo "Unsupported target environment: $TARGET_ENVIRONMENT"
+              exit 1
+              ;;
+          esac
+
+          if [[ "$IMAGE_DIGEST" != "$EXPECTED_IMAGE_PREFIX"* ]]; then
+            echo "image_digest must target ${BASE_IMAGE_NAME}@sha256:<64 hex>"
+            exit 1
+          fi
+
+          DIGEST_HEX="${IMAGE_DIGEST#"$EXPECTED_IMAGE_PREFIX"}"
+          if [[ ! "$DIGEST_HEX" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "image_digest must use a 64-character lowercase sha256 hex digest"
+            exit 1
+          fi
+
+          echo "NAMESPACE=idblu-tts-${TARGET_ENVIRONMENT}" >> "$GITHUB_ENV"
+          echo "OVERLAY=${K8S_ROOT}/${TARGET_ENVIRONMENT}" >> "$GITHUB_ENV"
+          echo "PROMOTION_OVERLAY_DIR=${K8S_ROOT}/.promotion-${TARGET_ENVIRONMENT}" >> "$GITHUB_ENV"
+          echo "IMAGE_REPOSITORY=${BASE_IMAGE_NAME}" >> "$GITHUB_ENV"
+          echo "IMAGE_SHA=sha256:${DIGEST_HEX}" >> "$GITHUB_ENV"
+
+      - name: Check out requested git ref
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.git_ref }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Update kubeconfig
+        shell: bash
+        run: |
+          aws eks update-kubeconfig \
+            --name "${EKS_CLUSTER_NAME}" \
+            --region "${AWS_REGION}"
+
+      - name: Render manifests with pinned image digest
+        shell: bash
+        run: |
+          rm -rf "$PROMOTION_OVERLAY_DIR"
+          mkdir -p "$PROMOTION_OVERLAY_DIR"
+          cat > "$PROMOTION_OVERLAY_DIR/kustomization.yaml" <<EOF
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+            - ../${TARGET_ENVIRONMENT}
+          images:
+            - name: $BASE_IMAGE_NAME
+              newName: $IMAGE_REPOSITORY
+              digest: $IMAGE_SHA
+          EOF
+
+      - name: Apply promotion overlay
+        shell: bash
+        run: |
+          kubectl apply -k "$PROMOTION_OVERLAY_DIR" --validate=false
+
+      - name: Annotate deployment with promotion metadata
+        shell: bash
+        run: |
+          kubectl annotate deployment/"$WORKLOAD_NAME" \
+            -n "$NAMESPACE" \
+            "idblu.ca/release-version=$RELEASE_VERSION" \
+            "idblu.ca/git-ref=$GIT_REF" \
+            "idblu.ca/image-digest=$IMAGE_DIGEST" \
+            --overwrite
+
+      - name: Wait for rollout
+        shell: bash
+        run: |
+          kubectl -n "$NAMESPACE" rollout status deployment/"$WORKLOAD_NAME" --timeout=30m
+
+      - name: Show deployed pods
+        shell: bash
+        run: |
+          kubectl -n "$NAMESPACE" get pods -l app.kubernetes.io/name=idblu-tts -o wide
+          kubectl -n "$NAMESPACE" get deployment "$WORKLOAD_NAME" -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
+
+      - name: Record promotion summary
+        shell: bash
+        run: |
+          {
+            echo "## ID-BLU TTS promotion"
+            echo ""
+            echo "- Environment: $TARGET_ENVIRONMENT"
+            echo "- Namespace: $NAMESPACE"
+            echo "- Overlay: $OVERLAY"
+            echo "- Release version: $RELEASE_VERSION"
+            echo "- Git ref: $GIT_REF"
+            echo "- Image: $IMAGE_DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove generated promotion overlay
+        if: always()
+        shell: bash
+        run: rm -rf "$PROMOTION_OVERLAY_DIR"
