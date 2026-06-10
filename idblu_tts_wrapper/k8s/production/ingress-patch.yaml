@@ -3,6 +3,7 @@ kind: Ingress
 metadata:
   name: idblu-tts-private
   annotations:
+    alb.ingress.kubernetes.io/group.name: idblu-tts
     external-dns.alpha.kubernetes.io/hostname: idblu-tts.internal.account.idblu.com
 spec:
   rules:

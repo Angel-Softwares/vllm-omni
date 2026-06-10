@@ -11,8 +11,10 @@ resources:
 
 patches:
   - path: deployment-patch.yaml
+  - path: deployment-ready-responses-patch.yaml
   - path: configmap-patch.yaml
   - path: ingress-patch.yaml
+  - path: ingress-ready-responses-patch.yaml
   - path: poddisruptionbudget-patch.yaml
   - path: serviceaccount-patch.yaml
   - path: secretproviderclass-patch.yaml

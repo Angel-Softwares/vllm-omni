@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: idblu-tts-ready-responses
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: idblu-tts-ready-responses
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

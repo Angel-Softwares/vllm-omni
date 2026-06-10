@@ -4,11 +4,14 @@ kind: Kustomization
 resources:
   - configmap.yaml
   - deployment.yaml
+  - deployment-ready-responses.yaml
   - ingress.yaml
+  - ingress-ready-responses.yaml
   - cronjob-voice-sync.yaml
   - poddisruptionbudget.yaml
   - storageclass-voice-efs.yaml
   - service.yaml
+  - service-ready-responses.yaml
   - pvc-voice-cache.yaml
   - serviceaccount.yaml
   - secretproviderclass.yaml
@@ -16,6 +19,5 @@ resources:
 labels:
   - includeSelectors: true
     pairs:
-      app.kubernetes.io/name: idblu-tts
       app.kubernetes.io/component: speech-api
       app.kubernetes.io/part-of: vllm-omni

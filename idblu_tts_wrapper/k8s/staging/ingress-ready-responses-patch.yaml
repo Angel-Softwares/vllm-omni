@@ -1,19 +1,19 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: idblu-tts-private
+  name: idblu-tts-ready-responses-private
   annotations:
     alb.ingress.kubernetes.io/group.name: idblu-tts
-    external-dns.alpha.kubernetes.io/hostname: idblu-tts-release.internal.account.idblu.com
+    external-dns.alpha.kubernetes.io/hostname: idblu-tts-ready-responses-staging.internal.account.idblu.com
 spec:
   rules:
-    - host: idblu-tts-release.internal.account.idblu.com
+    - host: idblu-tts-ready-responses-staging.internal.account.idblu.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: idblu-tts
+                name: idblu-tts-ready-responses
                 port:
                   number: 80

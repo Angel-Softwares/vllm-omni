@@ -6,7 +6,7 @@ spec:
   accessModes:
     - ReadWriteMany
   storageClassName: ""
-  volumeName: idblu-tts-model-cache-release
+  volumeName: idblu-tts-model-cache-release-v2
   resources:
     requests:
       storage: 80Gi
